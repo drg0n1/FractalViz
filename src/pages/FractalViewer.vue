@@ -1,202 +1,207 @@
 <template>
-    <q-page class="fullscreen">
-        <canvas ref="canvasRef" class="fullscreen" />
+    <q-page class="fractal-page-container">
+        <canvas ref="canvasRef" />
 
         <q-page-sticky position="top-left" :offset="[18, 18]">
             <q-card class="q-pa-md" style="width: 300px">
                 <div class="text-h6">Contrôles du Fractal</div>
+
+                <q-select v-model="targetFractal" :options="fractalOptions" label="Type de Fractal" emit-value
+                    map-options options-dense class="q-mt-md" />
+
                 <q-slider v-model="uniforms.u_maxIterations" :min="10" :max="1000" :step="10" label label-always
                     class="q-mt-md" />
                 <q-item-label class="q-mt-sm">Itérations : {{ uniforms.u_maxIterations }}</q-item-label>
+
+                <div v-if="targetFractal === 6" class="q-mt-md"> <q-item-label class="text-caption q-mb-sm">Constante
+                        Julia (C)</q-item-label>
+                    <q-slider v-model="uniforms.u_julia_c[0]" :min="-2.0" :max="2.0" :step="0.001" label label-always
+                        :label-value="`Réel: ${uniforms.u_julia_c[0].toFixed(3)}`" />
+                    <q-slider v-model="uniforms.u_julia_c[1]" :min="-2.0" :max="2.0" :step="0.001" label label-always
+                        :label-value="`Imag: ${uniforms.u_julia_c[1].toFixed(3)}`" class="q-mt-sm" />
+                </div>
+                <div v-if="targetFractal === 6" class="q-mt-md">
+                    <q-banner v-if="isJuliaValueBoring" inline-actions dense class="text-white bg-orange q-mt-sm">
+                        <template v-slot:avatar>
+                            <q-icon name="warning" />
+                        </template>
+                        Cette valeur de C produira probablement un fractal vide ou peu intéressant.
+                    </q-banner>
+                </div>
                 <q-btn label="Reset View" @click="resetView" color="primary" class="q-mt-md" />
                 <q-item-label class="q-mt-sm text-caption">
                     * Utilisez la molette pour zoomer
                     <br />
                     * Cliquez et glissez pour vous déplacer
                 </q-item-label>
+                <q-btn label="Generate Fractal" @click="generateFractal" color="secondary" class="q-mt-md" />
             </q-card>
         </q-page-sticky>
     </q-page>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, watch } from 'vue';
 import * as twgl from 'twgl.js';
-
-// --- Les Shaders ---
-
-// 1. Vertex Shader (Le Géomètre)
-// Son seul rôle : prendre 2 triangles qui forment un carré
-// et faire en sorte qu'ils remplissent l'écran.
-const vs = `
-    attribute vec4 position;
-    void main() {
-      gl_Position = position;
-    }
-  `;
-
-// 2. Fragment Shader (L'Artiste)
-// C'est ici que la magie opère. Exécuté pour CHAQUE pixel.
-const fs = `
-    precision highp float; // On demande la meilleure précision (32-bit)
-
-    // Variables reçues depuis JavaScript
-    uniform vec2 u_resolution;
-    uniform vec2 u_pan;
-    uniform float u_zoom;
-    uniform int u_maxIterations;
-    uniform float u_time;
-
-    // Fonction pour convertir HSV (Teinte, Saturation, Valeur) en RVB
-    // C'est juste pour faire de jolies couleurs
-    vec3 hsv2rgb(vec3 c) {
-      vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-      vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-      return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-    }
-
-    void main() {
-      // 1. Transformer la coordonnée du pixel (ex: 800, 600)
-      //    en coordonnée mathématique (ex: -0.5, 0.0)
-      vec2 coord = (gl_FragCoord.xy / u_resolution) - 0.5;
-      coord.x *= u_resolution.x / u_resolution.y; // Gérer le ratio de l'écran
-      coord = (coord / u_zoom) + u_pan; // Appliquer le zoom et le déplacement
-
-      // 2. Algorithme de Mandelbrot
-      vec2 z = vec2(0.0);
-      vec2 c = coord;
-      int i = 0;
-
-      for(int j = 0; j < 1000; j++) { // Doit être <= u_maxIterations
-        if (j >= u_maxIterations) break; // Limite de boucle
-
-        z = vec2(z.x*z.x - z.y*z.y, 2.0*z.x*z.y) + c;
-
-        if(dot(z, z) > 4.0) {
-          break; // Le point s'est échappé
-        }
-        i = j;
-      }
-
-      // 3. Calculer la couleur
-      vec3 color = vec3(0.0); // Noir (intérieur de l'ensemble)
-
-      if (i < u_maxIterations - 1) {
-        float smooth_i = float(i) + 1.0 - log(log(dot(z,z))) / log(2.0);
-
-        // FAIRE PULSER LA COULEUR AVEC LE TEMPS
-        float hue = 0.5 + 0.1 * smooth_i / float(u_maxIterations) + (sin(u_time) * 0.1);
-
-        color = hsv2rgb(vec3(fract(hue), 0.8, 1.0));
-        }
-
-        gl_FragColor = vec4(color, 1.0);
-    }
-  `;
-
-// --- Logique du Composant ---
+import vs from '../shaders/fractal.vert?raw';
+import fs from '../shaders/fractal.frag?raw';
+import { fractalOptions, isJuliaCInteresting } from '../utils/fractalUtils';
 
 const canvasRef = ref(null);
-let gl; // Contexte WebGL
-let programInfo; // Le shader compilé
-let bufferInfo; // Le carré (2 triangles) à dessiner
+let gl;
+let programInfo;
+let bufferInfo;
 let animationFrameId;
 
-// Les "uniforms" sont les variables JS que l'on envoie au shader
+const targetFractal = ref(0);
+
+// Shaders Uniforms
 const uniforms = reactive({
     u_resolution: [300, 300],
     u_pan: [-0.7, 0.0],
-    u_zoom: 1.5,
+    u_zoom: 0.7,
     u_maxIterations: 100,
-    u_time: 0.0, // Notre nouvelle variable
+    u_time: 0.0,
+    u_fractalType_from: 0,
+    u_fractalType_to: 0,
+    u_morph_progress: 0.0,
+    u_julia_c: [-0.7, 0.27015],
 });
-// Fonction pour (re)démarrer la vue
+
+let morphStartTime = 0;
+const MORPH_DURATION = 1500;
+const isJuliaValueBoring = ref(false);
+
+watch(targetFractal, (newFractalType) => {
+    uniforms.u_fractalType_from = uniforms.u_fractalType_to;
+
+    uniforms.u_fractalType_to = newFractalType;
+
+    uniforms.u_morph_progress = 0.0;
+    morphStartTime = performance.now();
+});
+
+watch(
+    () => uniforms.u_julia_c,
+    (newC) => {
+        if (targetFractal.value === 6) {
+            const isInteresting = isJuliaCInteresting(newC[0], newC[1]);
+            isJuliaValueBoring.value = !isInteresting;
+        } else {
+            isJuliaValueBoring.value = false;
+        }
+    },
+    { deep: true }
+);
+
+function getMouseWorldCoords(event) {
+    if (!gl || !canvasRef.value) return [0, 0];
+    const rect = canvasRef.value.getBoundingClientRect();
+
+    // Coordonnées du pixel par rapport au canevas
+    const mouseX = event.clientX - rect.left;
+    const mouseY = rect.bottom - event.clientY; // Y est inversé en WebGL
+
+    // Coordonnées normalisées (-0.5 à 0.5, gérant le ratio)
+    const coordX = (mouseX / gl.canvas.width - 0.5) * (gl.canvas.width / gl.canvas.height);
+    const coordY = (mouseY / gl.canvas.height - 0.5);
+
+    // Coordonnées mondiales (appliquant zoom et pan)
+    const worldX = (coordX / uniforms.u_zoom) + uniforms.u_pan[0];
+    const worldY = (coordY / uniforms.u_zoom) + uniforms.u_pan[1];
+
+    return [worldX, worldY];
+}
+
+// Fonction pour (re)démarrer la vue (mise à jour)
 const resetView = () => {
-    uniforms.u_pan = [-0.7, 0.0];
-    uniforms.u_zoom = 1.5;
     uniforms.u_maxIterations = 100;
+
+    // Centre la vue en fonction du fractal ACTIF
+    const currentFractal = uniforms.u_fractalType_to;
+
+    if (currentFractal == 1) { // Burning Ship
+        uniforms.u_pan = [-1.75, -0.05];
+        uniforms.u_zoom = 1.0;
+    } else if (currentFractal == 2) { // Tricorn
+        uniforms.u_pan = [0.0, 0.0];
+        uniforms.u_zoom = 0.7;
+    } else { // Mandelbrot & Multibrots
+        uniforms.u_pan = [-0.7, 0.0];
+        uniforms.u_zoom = 0.7;
+    }
 };
 
-// La boucle de rendu (appelée ~60 fois/sec)
-const render = (time) => { // 'time' est maintenant utilisé !
+// La boucle de rendu (mise à jour pour l'animation de morphing)
+const render = (time) => {
     if (!gl) return;
 
+    // AJOUT: Animation du morphing
+    if (uniforms.u_morph_progress < 1.0 && morphStartTime > 0) {
+        const elapsedTime = time - morphStartTime;
+        uniforms.u_morph_progress = Math.min(elapsedTime / MORPH_DURATION, 1.0);
+
+        // Si l'animation est finie, on fige
+        if (uniforms.u_morph_progress >= 1.0) {
+            morphStartTime = 0;
+            uniforms.u_fractalType_from = uniforms.u_fractalType_to;
+        }
+    }
+
+    // Rendu standard
     twgl.resizeCanvasToDisplaySize(gl.canvas);
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-
-    // Mettre à jour les uniforms
     uniforms.u_resolution = [gl.canvas.width, gl.canvas.height];
-    uniforms.u_time = time * 0.001; // Convertir les ms en secondes
-
+    uniforms.u_time = time * 0.001;
     gl.useProgram(programInfo.program);
     twgl.setBuffersAndAttributes(gl, programInfo, bufferInfo);
     twgl.setUniforms(programInfo, uniforms);
-
     twgl.drawBufferInfo(gl, bufferInfo);
     animationFrameId = requestAnimationFrame(render);
 };
 
-// --- Gestion des Événements ---
+// Gestion des Événement
 const handleWheel = (event) => {
     event.preventDefault();
-    const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9; // Zoom in ou out
+    const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9;
 
-    // Logique pour zoomer vers le pointeur de la souris
-    const rect = canvasRef.value.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = rect.bottom - event.clientY; // Y est inversé en WebGL
-
-    const mouseCoordX = (mouseX / gl.canvas.width - 0.5) * (gl.canvas.width / gl.canvas.height);
-    const mouseCoordY = (mouseY / gl.canvas.height - 0.5);
-
-    const mouseWorldX = (mouseCoordX / uniforms.u_zoom) + uniforms.u_pan[0];
-    const mouseWorldY = (mouseCoordY / uniforms.u_zoom) + uniforms.u_pan[1];
+    const [mouseWorldX, mouseWorldY] = getMouseWorldCoords(event);
 
     uniforms.u_zoom *= zoomFactor;
 
-    const newMouseWorldX = (mouseCoordX / uniforms.u_zoom) + uniforms.u_pan[0];
-    const newMouseWorldY = (mouseCoordY / uniforms.u_zoom) + uniforms.u_pan[1];
+    // Re-calculer les coords mondiales pour le pan
+    const [newMouseWorldX, newMouseWorldY] = getMouseWorldCoords(event);
 
     uniforms.u_pan[0] += mouseWorldX - newMouseWorldX;
     uniforms.u_pan[1] += mouseWorldY - newMouseWorldY;
 };
 
 const handleMouseMove = (event) => {
-    if (event.buttons !== 1) return; // Si le clic gauche n'est pas enfoncé
-
+    if (event.buttons !== 1) return;
     const panX = event.movementX / gl.canvas.height / uniforms.u_zoom;
     const panY = -event.movementY / gl.canvas.height / uniforms.u_zoom;
-
     uniforms.u_pan[0] -= panX;
     uniforms.u_pan[1] -= panY;
 };
 
-// --- Cycle de vie ---
+// Cycle de vie
 onMounted(() => {
     gl = canvasRef.value.getContext('webgl');
     if (!gl) {
         console.error("WebGL n'est pas supporté !");
         return;
     }
-
-    // TWGL compile les shaders et crée le programme
     programInfo = twgl.createProgramInfo(gl, [vs, fs]);
-
-    // TWGL crée un buffer pour un simple carré qui remplit l'écran
     bufferInfo = twgl.createBufferInfoFromArrays(gl, {
         position: [-1, -1, 0, 1, -1, 0, -1, 1, 0, -1, 1, 0, 1, -1, 0, 1, 1, 0],
     });
-
-    // Ajouter les écouteurs d'événements
     canvasRef.value.addEventListener('wheel', handleWheel, { passive: false });
     canvasRef.value.addEventListener('mousemove', handleMouseMove);
 
-    // Lancer la boucle de rendu
     render();
 });
 
 onUnmounted(() => {
-    // Nettoyer quand le composant est détruit
     cancelAnimationFrame(animationFrameId);
     if (canvasRef.value) {
         canvasRef.value.removeEventListener('wheel', handleWheel);
@@ -204,3 +209,16 @@ onUnmounted(() => {
     }
 });
 </script>
+<style scoped>
+.fractal-page-container {
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+}
+
+canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+</style>
