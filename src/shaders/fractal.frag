@@ -19,7 +19,7 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 
-// 0: Mandelbrot (z^2)
+// Mandelbrot (z^2)
 vec2 calc_mandelbrot(vec2 z, vec2 c) {
     return vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
 }
@@ -94,24 +94,22 @@ void main() {
     vec2 z_to_init;
     vec2 c_to_init;
 
-    // --- Etat de départ (From) ---
-    if (u_fractalType_from == 6) { // Si c'est un Julia
-        z_from_init = coord;       // z commence à la coordonnée
-        c_from_init = u_julia_c; // c est la constante
-    } else { // Si c'est un Mandelbrot/BurningShip/etc
-        z_from_init = vec2(0.0);   // z commence à 0
-        c_from_init = coord;     // c est la coordonnée
+    if (u_fractalType_from == 6) {
+        z_from_init = coord;
+        c_from_init = u_julia_c;
+    } else {
+        z_from_init = vec2(0.0);
+        c_from_init = coord;
     }
 
     if (u_fractalType_to == 6) {
         z_to_init = coord;
         c_to_init = u_julia_c;
-    } else { // Si c'est un Mandelbrot/BurningShip/etc
+    } else {
         z_to_init = vec2(0.0);
         c_to_init = coord;
     }
 
-    // Interpole les conditions initiales
     vec2 z = mix(z_from_init, z_to_init, u_morph_progress);
     vec2 c = mix(c_from_init, c_to_init, u_morph_progress);
 
@@ -121,7 +119,6 @@ void main() {
         if(j >= u_maxIterations)
             break;
 
-        // Morphing
         vec2 z_from = get_fractal_z(u_fractalType_from, z, c);
         vec2 z_to = get_fractal_z(u_fractalType_to, z, c);
 
@@ -133,7 +130,6 @@ void main() {
         i = j;
     }
 
-    // Color
     vec3 color = vec3(0.0);
     if(i < u_maxIterations - 1) {
         float smooth_i = float(i) + 1.0 - log(log(dot(z, z))) / log(2.0);
