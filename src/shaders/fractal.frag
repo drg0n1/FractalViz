@@ -103,8 +103,7 @@ void main() {
         c_from_init = coord;     // c est la coordonnée
     }
 
-    // --- Etat d'arrivée (To) ---
-    if (u_fractalType_to == 6) { // Si c'est un Julia
+    if (u_fractalType_to == 6) {
         z_to_init = coord;
         c_to_init = u_julia_c;
     } else { // Si c'est un Mandelbrot/BurningShip/etc
