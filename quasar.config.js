@@ -45,7 +45,7 @@ export default defineConfig((ctx) => {
 
       // rebuildCache: true, // rebuilds Vite/linter/etc cache on startup
 
-      publicPath: '/FractalViz/',
+      publicPath: '/',
       // analyze: true,
       // env: {},
       // rawDefine: {}
